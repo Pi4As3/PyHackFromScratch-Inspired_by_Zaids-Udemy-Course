@@ -1,1 +1,2 @@
-# PyHackFromScratch-Inspired_by_Zaids-Udemy-Course
+# Python Skript Sammlung die ein Ethical Hacker im Werkzeugkasten haben sollte
+## Start: 4.1 ;-(
